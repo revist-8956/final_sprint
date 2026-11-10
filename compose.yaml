@@ -1,0 +1,13 @@
+name: practice
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - board-redis:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
+volumes:
+  board-redis:

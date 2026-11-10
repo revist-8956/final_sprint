@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: practice-board-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: practice-board-api
+  template:
+    metadata:
+      labels:
+        app: practice-board-api
+    spec:
+      containers:
+        - name: api
+          image: practice-board-api
+          imagePullPolicy: Always
+          env:
+            - name: REDIS_HOST
+              value: practice-board-redis
+            - name: REDIS_PORT
+              value: "6379"
+          ports:
+            - containerPort: 8080
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /api/posts
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: practice-board-api
+spec:
+  type: ClusterIP
+  selector:
+    app: practice-board-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

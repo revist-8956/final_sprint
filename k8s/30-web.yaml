@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: practice-board-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: practice-board-web
+  template:
+    metadata:
+      labels:
+        app: practice-board-web
+    spec:
+      containers:
+        - name: web
+          image: practice-board-web
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: practice-board-web
+spec:
+  type: ClusterIP
+  selector:
+    app: practice-board-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
