@@ -19,22 +19,34 @@ Parameters:
     AllowedPattern: '1\.[0-9]{2}'
     Default: 1.37
     Description: Required. Choose an EKS version currently in STANDARD support and reuse it for restore.
-  ClusterAdminRoleArn:
+  ClusterAdminUserArn:
     Type: String
-    AllowedPattern: "^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/.+$"
-    Description: Existing operator IAM role ARN, NOT an STS assumed-role session ARN. Grants cluster admin.
+    AllowedPattern: "^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:user/.+$"
+    Description: First existing IAM user ARN to receive cluster admin access.
+    Default: arn:aws:iam::410710358982:user/sprint_user01
+  ClusterAdminUser2Arn:
+    Type: String
+    AllowedPattern: "^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:user/.+$"
+    Description: Second distinct existing IAM user ARN to receive cluster admin access.
+    Default: arn:aws:iam::410710358982:user/sprint_user02
+  ClusterAdminUser3Arn:
+    Type: String
+    AllowedPattern: "^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:user/.+$"
+    Description: Third distinct existing IAM user ARN to receive cluster admin access.
+    Default: arn:aws:iam::410710358982:user/sprint_user03
   AdminPublicAccessCidr:
     Type: String
     AllowedPattern: '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/(?:2[4-9]|3[0-2])$'
-    Description: Administrator public egress IPv4 CIDR (/24 to /32, normally your VPN egress /32). No default.
+    Description: Administrator public egress IPv4 CIDR (/24 to /32, normally your VPN egress /32).
+    Default: 58.235.174.52/32
   ObservabilityInstanceType:
     Type: String
     Default: t3.xlarge
-    AllowedValues: [t3.xlarge, t3.2xlarge, m6i.xlarge, m6a.xlarge]
+    AllowedValues: [t3.xlarge, m6i.xlarge]
   AppInstanceType:
     Type: String
     Default: t3.medium
-    AllowedValues: [t3.medium, t3.large, m6i.large, m6a.large]
+    AllowedValues: [t3.large, m6i.large]
   T3CpuCredits:
     Type: String
     Default: standard
@@ -71,12 +83,22 @@ Parameters:
   EbsCsiAddonVersion:
     Type: String
     Default: ""
+Rules:
+  DistinctAdminUsers:
+    Assertions:
+      - Assert:
+          !Not [!Equals [!Ref ClusterAdminUserArn, !Ref ClusterAdminUser2Arn]]
+        AssertDescription: ClusterAdminUserArn and ClusterAdminUser2Arn must be different.
+      - Assert:
+          !Not [!Equals [!Ref ClusterAdminUserArn, !Ref ClusterAdminUser3Arn]]
+        AssertDescription: ClusterAdminUserArn and ClusterAdminUser3Arn must be different.
+      - Assert:
+          !Not [!Equals [!Ref ClusterAdminUser2Arn, !Ref ClusterAdminUser3Arn]]
+        AssertDescription: ClusterAdminUser2Arn and ClusterAdminUser3Arn must be different.
 Conditions:
   IsObservabilityT3: !Or
     - !Equals [!Ref ObservabilityInstanceType, t3.xlarge]
-    - !Equals [!Ref ObservabilityInstanceType, t3.2xlarge]
   IsAppT3: !Or
-    - !Equals [!Ref AppInstanceType, t3.medium]
     - !Equals [!Ref AppInstanceType, t3.large]
   HasNodeAmiRelease: !Not [!Equals [!Ref NodeAmiReleaseVersion, ""]]
   HasVpcCniVersion: !Not [!Equals [!Ref VpcCniAddonVersion, ""]]
@@ -147,7 +169,34 @@ Resources:
     Type: AWS::EKS::AccessEntry
     Properties:
       ClusterName: !Ref Cluster
-      PrincipalArn: !Ref ClusterAdminRoleArn
+      PrincipalArn: !Ref ClusterAdminUserArn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: !Sub "arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          AccessScope: { Type: cluster }
+  ClusterAdminUser2Access:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !Ref ClusterAdminUser2Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: !Sub "arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          AccessScope: { Type: cluster }
+  ClusterAdminUser3Access:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !Ref ClusterAdminUser3Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: !Sub "arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          AccessScope: { Type: cluster }
+  RootClusterAdminAccess:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
       Type: STANDARD
       AccessPolicies:
         - PolicyArn: !Sub "arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"

@@ -7,7 +7,7 @@
 | [`bootstrap.yaml`](bootstrap.yaml) | VPC, 두 AZ의 public/private subnet 각 2개, IGW, route table, IAM 역할, Backup vault | 유지 |
 | [`daily-eks.yaml`](daily-eks.yaml) | NAT Gateway·EIP·private 기본 경로, EKS, 워커 2개, 접근 권한, 기본 Add-on·EBS CSI | 데이터 정리 후 삭제 |
 
-현재 기준은 **관측 워커 `t3.xlarge` 1대 + 앱 워커 `t3.medium` 1대**입니다. 이전 [`eks-cloudformation-backup-plan.md`](../../eks-cloudformation-backup-plan.md)의 동일한 `m6i.large` 2대 견적은 과거 가정이며 현재 구성의 견적이 아닙니다.
+현재 기준은 **관측 워커 `t3.xlarge` 1대 + 앱 워커 `t3.medium` 1대**입니다. 이전 [`eks-cloudformation-backup-plan.md`](../../docs/eks-cloudformation-backup-plan.md)의 동일한 `m6i.large` 2대 견적은 과거 가정이며 현재 구성의 견적이 아닙니다.
 
 ## 생성 범위와 남은 작업
 
@@ -45,15 +45,19 @@ export BOOTSTRAP_STACK=observability-bootstrap
 export DAILY_STACK=observability-daily
 export CLUSTER_NAME=observability-lab
 
-# 이 다섯 값은 본인의 환경에 맞게 먼저 export합니다.
+# 이 일곱 값은 본인의 환경에 맞게 먼저 export합니다.
 : "${EKS_VERSION:?현재 EKS STANDARD 지원 중인 Kubernetes 버전을 설정하세요}"
-: "${CLUSTER_ADMIN_ROLE_ARN:?클러스터를 관리할 기존 IAM role ARN을 설정하세요}"
+: "${CLUSTER_ADMIN_USER_ARN:?첫 번째 IAM 사용자 ARN을 설정하세요}"
+: "${CLUSTER_ADMIN_USER_2_ARN:?두 번째 IAM 사용자 ARN을 설정하세요}"
+: "${CLUSTER_ADMIN_USER_3_ARN:?세 번째 IAM 사용자 ARN을 설정하세요}"
 : "${ADMIN_PUBLIC_CIDR:?관리자 또는 공통 VPN의 공인 IPv4 CIDR을 설정하세요}"
 : "${AVAILABILITY_ZONE_A:?서울 리전에서 사용할 첫 번째 AZ 이름을 설정하세요}"
 : "${AVAILABILITY_ZONE_B:?첫 번째와 다른 두 번째 AZ 이름을 설정하세요}"
 ```
 
-- `CLUSTER_ADMIN_ROLE_ARN`은 `arn:aws:iam::계정:role/역할` 형식입니다. **`arn:aws:sts::...:assumed-role/...` 세션 ARN이 아닙니다.** 이 역할에 클러스터 관리자 권한을 부여하므로 승인된 관리 역할만 지정합니다. 4명은 각자 SSO/자격증명으로 이 역할을 사용할 권한이 필요합니다.
+- 세 `CLUSTER_ADMIN_USER...ARN`은 서로 다른 기존 IAM 사용자의 `arn:aws:iam::계정:user/사용자` 형식 ARN입니다. 역할 ARN이나 STS 세션 ARN은 사용할 수 없습니다. 각 사용자에게 EKS 클러스터 전체 관리자 권한을 부여하므로 사용자마다 본인의 자격증명을 사용하고 공유하지 않습니다.
+- 요청에 따라 배포 대상 계정의 **AWS root 사용자도 별도 Access Entry의 클러스터 전체 관리자**로 등록합니다. root ARN은 `AWS::AccountId`로 자동 구성하며 사용자가 입력하지 않습니다. root 사용은 강력한 권한이므로 비상용으로 한정하고 MFA 등으로 보호하세요. [AWS 권고](https://docs.aws.amazon.com/eks/latest/userguide/security-iam.html)
+- 최초 등록은 root가 배포 설정을 준비·승인하는 운영 절차로 정합니다. Git sync로 배포하면 실제 AWS 리소스 생성은 구성된 서비스 역할 등을 통해 수행될 수 있으며, 이 템플릿은 실행 주체가 root인지 강제하지 않습니다.
 - `ADMIN_PUBLIC_CIDR`은 `/24`~`/32`만 허용하며 일반적으로 공통 VPN 출구의 `/32`를 사용합니다. 하나의 CIDR만 받으므로 서로 다른 네트워크라면 공통 VPN 등 접속 경로를 먼저 정합니다. `0.0.0.0/0`는 허용하지 않습니다.
 - public EKS API는 위 CIDR로 제한하고 private API를 활성화합니다. 워커는 VPC 내부 endpoint로 접속합니다. SSH 대신 각자의 kubectl을 사용하며, 대시보드는 설치 후 `kubectl port-forward` 등으로 접근합니다.
 - 아직 STANDARD 지원 중인 `EKS_VERSION`을 선택하고 복원 시 동일하게 유지합니다. `SupportType: STANDARD`는 확장 지원 과금을 피하지만 **표준 지원 종료 시 자동 업그레이드 대상**이므로 영구 버전 고정을 의미하지 않습니다.
@@ -132,7 +136,9 @@ aws cloudformation deploy \
     BootstrapStackName="$BOOTSTRAP_STACK" \
     ClusterName="$CLUSTER_NAME" \
     KubernetesVersion="$EKS_VERSION" \
-    ClusterAdminRoleArn="$CLUSTER_ADMIN_ROLE_ARN" \
+    ClusterAdminUserArn="$CLUSTER_ADMIN_USER_ARN" \
+    ClusterAdminUser2Arn="$CLUSTER_ADMIN_USER_2_ARN" \
+    ClusterAdminUser3Arn="$CLUSTER_ADMIN_USER_3_ARN" \
     AdminPublicAccessCidr="$ADMIN_PUBLIC_CIDR"
 
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
@@ -141,7 +147,23 @@ kubectl get nodes -L workload,topology.kubernetes.io/zone
 kubectl get pods -n kube-system -o wide
 ```
 
-kubectl을 실행할 때는 먼저 로컬 SSO/프로필에서 `CLUSTER_ADMIN_ROLE_ARN`의 관리 역할로 인증합니다. 다른 로컬 역할에서 매번 assume할 계획이라면 kubeconfig 명령에 `--role-arn "$CLUSTER_ADMIN_ROLE_ARN"`을 추가할 수 있습니다. 이 경우 실제 `sts:AssumeRole` 허용이 필요합니다. **EKS AccessEntry는 IAM 역할을 assume할 권한까지 부여하지 않습니다.**
+kubectl을 실행할 때는 먼저 세 IAM 사용자 ARN 중 본인에 해당하는 자격증명을 로컬 AWS 프로필에서 사용합니다. `aws sts get-caller-identity`로 현재 주체를 확인할 수 있습니다. 사용자마다 클러스터 API에 접근하기 위한 IAM 권한과 허용된 네트워크 경로도 필요합니다.
+
+Git sync 배포 파일을 직접 제공하는 경우 `parameters`에 `ClusterAdminUserArn`, `ClusterAdminUser2Arn`, `ClusterAdminUser3Arn`, `AdminPublicAccessCidr`를 지정합니다. 이전 이름인 `ClusterAdminRoleArn`은 더 이상 사용하지 않습니다. 사용자 ARN은 실제 계정 값으로 교체하고, 액세스 키는 배포 파일에 넣지 않습니다. Git sync는 커밋을 실제 스택에 반영할 수 있으므로 변경사항을 배포 전에 확인합니다.
+
+예를 들어 `infra/cloudformation/daily-eks-deployment.yaml`의 형식은 다음과 같습니다. `123456789012`, 사용자 이름, IP는 **실제 값이 아닌 예시**이며 모두 교체해야 합니다. 사용자 ARN 3개는 서로 달라야 합니다. root ARN은 입력하지 않습니다.
+
+```yaml
+template-file-path: infra/cloudformation/daily-eks.yaml
+parameters:
+  ClusterAdminUserArn: "arn:aws:iam::123456789012:user/user1"
+  ClusterAdminUser2Arn: "arn:aws:iam::123456789012:user/user2"
+  ClusterAdminUser3Arn: "arn:aws:iam::123456789012:user/user3"
+  AdminPublicAccessCidr: "203.0.113.10/32"
+tags: {}
+```
+
+이 파일을 수정한다고 클러스터가 즉시 등록되는 것은 아닙니다. Git sync가 감시하는 브랜치에 반영된 뒤 스택 생성·업데이트가 성공해야 합니다. **Git sync는 반영 즉시 실제 AWS 자원에 영향을 줄 수 있으므로** 커밋·병합 전에 파라미터와 변경 사항을 검토합니다. Access Entry가 기존에 존재한다면 중복 생성이나 교체 충돌이 없는지도 확인합니다.
 
 ### 기본값과 선택 파라미터
 
@@ -202,6 +224,21 @@ tolerations:
 6. 부모·자식 복원 결과와 skipped/failed 오브젝트를 확인하고 PVC `Bound`, Pod `Ready`, 이전 데이터 조회를 검증합니다. 그 후 GitOps를 재개합니다.
 
 기본 Add-on은 CloudFormation이 관리합니다. 복원이 기존 시스템 오브젝트를 건너뛸 수 있으므로 이를 백업 당시의 시스템 설정까지 덮어쓴 것으로 해석하지 않습니다. **최초 원본 삭제 전 복구시험**을 통과해야 합니다.
+
+### 백업 범위: 워커 루트 EBS와 관측 데이터 EBS
+
+**현재 템플릿과 EKS composite 백업 계획만으로는 워커의 루트 EBS를 백업하지 않습니다.** 또한 템플릿은 Backup vault와 IAM 역할만 생성하며, 백업 계획·작업을 자동 생성하거나 실행하지 않습니다.
+
+| 대상 | EKS composite 백업 | 일일 스택 재생성 시 |
+|---|---|---|
+| EKS/Kubernetes 설정 | 지원되는 범위의 설정 백업. 백업 작업을 별도로 실행·검증해야 함 | 일부는 CloudFormation으로 만들고, 나머지는 복원. 기존 오브젝트는 덮어쓰지 않음 |
+| 관측 데이터 EBS | 지원되는 EBS CSI 기반 PVC라면 별도 실행한 EKS 백업의 자식 복구 지점에 포함 | 백업에서 새 EBS로 복원하고 PVC 연결을 검증 |
+| 두 워커의 **루트 EBS** | **포함되지 않음** | 노드 종료 시 `DeleteOnTermination: true`에 따라 삭제되고, 새 노드가 생성될 때 새 루트 EBS를 생성 |
+| 노드 루트의 파일·이미지 캐시·컨테이너 로그 | 별도 백업하지 않으면 보존되지 않음 | 자동 복원되지 않음 |
+
+EKS 백업이 포함하는 영구 데이터는 **지원되는 CSI 드라이버로 PVC에 연결된 저장소**입니다. 노드 루트 디스크는 여기에 해당하지 않습니다. 정확한 자식 복구 지점과 백업 상태를 확인하고, 루트 파일시스템이나 `hostPath`/`emptyDir`에 유일한 데이터를 저장하지 마세요. [AWS Backup EKS 백업 범위](https://docs.aws.amazon.com/aws-backup/latest/devguide/eks-backups.html)
+
+노드 루트 EBS가 꼭 필요하면 EC2 인스턴스 백업이나 해당 EBS 스냅샷을 **별도로** 구성할 수 있지만, 지금 템플릿에는 없습니다. 별도 백업에는 비용이 들고, 백업에서 EC2/볼륨을 복원한다고 새 Managed Node Group의 루트 디스크에 자동으로 붙는 것은 아닙니다. 복원 절차와 노드 부트스트랩을 별도로 설계·검증해야 합니다. [AWS Backup EC2 백업](https://docs.aws.amazon.com/aws-backup/latest/devguide/working-with-supported-services.html)
 
 ## 5. 매일 종료: 데이터 정리가 스택 삭제보다 먼저
 

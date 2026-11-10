@@ -1,6 +1,7 @@
 """Static lab invariants; no credentials or AWS API calls. Requires PyYAML."""
 
 from pathlib import Path
+import re
 import unittest
 
 import yaml
@@ -65,7 +66,9 @@ class TemplateTests(unittest.TestCase):
         for name in ("AvailabilityZoneA", "AvailabilityZoneB"):
             parameter = self.bootstrap["Parameters"][name]
             self.assertEqual(parameter["Type"], "AWS::EC2::AvailabilityZone::Name")
-            self.assertNotIn("Default", parameter)
+        defaults = [self.bootstrap["Parameters"][name].get("Default") for name in ("AvailabilityZoneA", "AvailabilityZoneB")]
+        if all(defaults):
+            self.assertNotEqual(*defaults)
         rule = self.bootstrap["Rules"]["DistinctAvailabilityZones"]["Assertions"][0]["Assert"]
         self.assertEqual(rule, {"Fn::Not": [{"Fn::Equals": [{"Ref": "AvailabilityZoneA"}, {"Ref": "AvailabilityZoneB"}]}]})
 
@@ -107,7 +110,9 @@ class TemplateTests(unittest.TestCase):
         self.assertFalse(cluster["AccessConfig"]["BootstrapClusterCreatorAdminPermissions"])
         self.assertEqual(cluster["UpgradePolicy"], {"SupportType": "STANDARD"})
         self.assertEqual(cluster["Version"], {"Ref": "KubernetesVersion"})
-        self.assertNotIn("Default", self.daily["Parameters"]["KubernetesVersion"])
+        version = self.daily["Parameters"]["KubernetesVersion"]
+        if "Default" in version:
+            self.assertRegex(str(version["Default"]), version["AllowedPattern"])
         network = cluster["ResourcesVpcConfig"]
         self.assertTrue(network["EndpointPrivateAccess"])
         self.assertEqual(network["PublicAccessCidrs"], [{"Ref": "AdminPublicAccessCidr"}])
@@ -116,6 +121,44 @@ class TemplateTests(unittest.TestCase):
             for suffix in ("A", "B")
         ])
         self.assertNotIn("Default", self.daily["Parameters"]["AdminPublicAccessCidr"])
+
+    def test_cluster_admin_is_an_explicit_iam_user(self):
+        parameters = self.daily["Parameters"]
+        user = parameters["ClusterAdminUserArn"]
+        self.assertNotIn("Default", user)
+        self.assertNotIn("ClusterAdminRoleArn", parameters)
+        pattern = user["AllowedPattern"]
+        self.assertTrue(re.fullmatch(pattern, "arn:aws:iam::123456789012:user/team/alice"))
+        for invalid in (
+            "arn:aws:iam::123456789012:root",
+            "arn:aws:iam::123456789012:role/admin",
+            "arn:aws:sts::123456789012:assumed-role/admin/session",
+            "",
+        ):
+            self.assertIsNone(re.fullmatch(pattern, invalid))
+        entry = self.daily_resources["ClusterAdminAccess"]["Properties"]
+        self.assertEqual(entry["PrincipalArn"], {"Ref": "ClusterAdminUserArn"})
+        self.assertEqual(entry["Type"], "STANDARD")
+        self.assertEqual(entry["AccessPolicies"][0]["AccessScope"], {"Type": "cluster"})
+
+    def test_root_and_three_users_have_separate_access_entries(self):
+        root = self.daily_resources["RootClusterAdminAccess"]["Properties"]
+        self.assertEqual(root["PrincipalArn"], {"Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"})
+        for resource_name, parameter_name in (
+            ("ClusterAdminAccess", "ClusterAdminUserArn"),
+            ("ClusterAdminUser2Access", "ClusterAdminUser2Arn"),
+            ("ClusterAdminUser3Access", "ClusterAdminUser3Arn"),
+        ):
+            param = self.daily["Parameters"][parameter_name]
+            self.assertNotIn("Default", param)
+            self.assertTrue(re.fullmatch(param["AllowedPattern"], "arn:aws:iam::123456789012:user/team/alice"))
+            self.assertIsNone(re.fullmatch(param["AllowedPattern"], "arn:aws:iam::123456789012:root"))
+            entry = self.daily_resources[resource_name]["Properties"]
+            self.assertEqual(entry["PrincipalArn"], {"Ref": parameter_name})
+            self.assertEqual(entry["AccessPolicies"][0]["PolicyArn"], root["AccessPolicies"][0]["PolicyArn"])
+            self.assertEqual(entry["AccessPolicies"][0]["AccessScope"], {"Type": "cluster"})
+        assertions = self.daily["Rules"]["DistinctAdminUsers"]["Assertions"]
+        self.assertEqual(len(assertions), 3)
 
     def test_only_root_disks_in_infrastructure(self):
         for name in ("ObservabilityLaunchTemplate", "AppLaunchTemplate"):
