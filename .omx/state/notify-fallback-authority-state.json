@@ -1,0 +1,14 @@
+{
+  "owner": "hud",
+  "pid": 8486,
+  "cwd": "/home/ahn-junseong/문서/Goorm/3rd_sprint",
+  "heartbeat_at": "2026-11-09T14:32:54.573Z",
+  "cooldown_ms": 5000,
+  "jitter_ms": 213,
+  "skip_count": 7717,
+  "last_status": "skipped",
+  "last_reason": "rate_limited",
+  "last_spawn_at": "2026-11-09T14:32:52.574Z",
+  "last_skip_at": "2026-11-09T14:32:54.573Z",
+  "next_allowed_at": "2026-11-09T14:32:57.787Z"
+}

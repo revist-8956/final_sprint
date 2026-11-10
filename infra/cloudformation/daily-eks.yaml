@@ -1,0 +1,336 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Disposable EKS infrastructure for the observability lab. Requires bootstrap.yaml.
+  Back up and delete PVC data BEFORE deleting this stack. Creation does not restore data.
+
+Parameters:
+  BootstrapStackName:
+    Type: String
+    Default: observability-bootstrap
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9-]*'
+    Description: Existing bootstrap stack in the same account and region.
+  ClusterName:
+    Type: String
+    Default: observability-lab
+    MinLength: 3
+    MaxLength: 64
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9_-]*'
+    Description: Reuse this name between daily recreations.
+  KubernetesVersion:
+    Type: String
+    AllowedPattern: '1\.[0-9]{2}'
+    Description: Required. Choose an EKS version currently in STANDARD support and reuse it for restore.
+  ClusterAdminRoleArn:
+    Type: String
+    AllowedPattern: '^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/.+$'
+    Description: Existing operator IAM role ARN, NOT an STS assumed-role session ARN. Grants cluster admin.
+  AdminPublicAccessCidr:
+    Type: String
+    AllowedPattern: '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/(?:2[4-9]|3[0-2])$'
+    Description: Administrator public egress IPv4 CIDR (/24 to /32, normally your VPN egress /32). No default.
+  ObservabilityInstanceType:
+    Type: String
+    Default: t3.xlarge
+    AllowedValues: [t3.xlarge, t3.2xlarge, m6i.xlarge, m6a.xlarge]
+  AppInstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues: [t3.medium, t3.large, m6i.large, m6a.large]
+  T3CpuCredits:
+    Type: String
+    Default: standard
+    AllowedValues: [standard, unlimited]
+    Description: Standard avoids Unlimited CPU surplus charges but throttles after credits run out.
+  ObservabilityRootVolumeGiB:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    Description: OS/container root disk only. Observability PVC data uses separate CSI volumes.
+  AppRootVolumeGiB:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    Description: OS/container root disk only. No application data disk is provisioned.
+  NodeAmiReleaseVersion:
+    Type: String
+    Default: ''
+    Description: Optional EKS AL2023 x86_64 release version. Empty selects an EKS-compatible default.
+  VpcCniAddonVersion:
+    Type: String
+    Default: ''
+  KubeProxyAddonVersion:
+    Type: String
+    Default: ''
+  CoreDnsAddonVersion:
+    Type: String
+    Default: ''
+  PodIdentityAgentAddonVersion:
+    Type: String
+    Default: ''
+  EbsCsiAddonVersion:
+    Type: String
+    Default: ''
+
+Conditions:
+  IsObservabilityT3: !Or
+    - !Equals [!Ref ObservabilityInstanceType, t3.xlarge]
+    - !Equals [!Ref ObservabilityInstanceType, t3.2xlarge]
+  IsAppT3: !Or
+    - !Equals [!Ref AppInstanceType, t3.medium]
+    - !Equals [!Ref AppInstanceType, t3.large]
+  HasNodeAmiRelease: !Not [!Equals [!Ref NodeAmiReleaseVersion, '']]
+  HasVpcCniVersion: !Not [!Equals [!Ref VpcCniAddonVersion, '']]
+  HasKubeProxyVersion: !Not [!Equals [!Ref KubeProxyAddonVersion, '']]
+  HasCoreDnsVersion: !Not [!Equals [!Ref CoreDnsAddonVersion, '']]
+  HasPodIdentityAgentVersion: !Not [!Equals [!Ref PodIdentityAgentAddonVersion, '']]
+  HasEbsCsiVersion: !Not [!Equals [!Ref EbsCsiAddonVersion, '']]
+
+Resources:
+  NatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - {Key: LabCluster, Value: !Ref ClusterName}
+        - {Key: Lifecycle, Value: daily}
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      ConnectivityType: public
+      AvailabilityMode: zonal
+      SubnetId:
+        Fn::ImportValue: !Sub '${BootstrapStackName}-PublicSubnetAId'
+      Tags:
+        - {Key: Name, Value: !Sub '${ClusterName}-nat'}
+        - {Key: Lifecycle, Value: daily}
+  PrivateDefaultRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Fn::ImportValue: !Sub '${BootstrapStackName}-PrivateRouteTableAId'
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateDefaultRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Fn::ImportValue: !Sub '${BootstrapStackName}-PrivateRouteTableBId'
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  Cluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref ClusterName
+      Version: !Ref KubernetesVersion
+      RoleArn:
+        Fn::ImportValue: !Sub '${BootstrapStackName}-ClusterRoleArn'
+      AccessConfig:
+        AuthenticationMode: API_AND_CONFIG_MAP
+        BootstrapClusterCreatorAdminPermissions: false
+      BootstrapSelfManagedAddons: true
+      UpgradePolicy:
+        SupportType: STANDARD
+      ResourcesVpcConfig:
+        EndpointPrivateAccess: true
+        EndpointPublicAccess: true
+        PublicAccessCidrs: [!Ref AdminPublicAccessCidr]
+        SubnetIds:
+          - Fn::ImportValue: !Sub '${BootstrapStackName}-PrivateSubnetAId'
+          - Fn::ImportValue: !Sub '${BootstrapStackName}-PrivateSubnetBId'
+      Tags:
+        - Key: Project
+          Value:
+            Fn::ImportValue: !Sub '${BootstrapStackName}-ProjectName'
+        - {Key: Lifecycle, Value: daily}
+
+  ClusterAdminAccess:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !Ref ClusterAdminRoleArn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: !Sub 'arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy'
+          AccessScope: {Type: cluster}
+
+  ObservabilityLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        # Managed node groups supply the AMI, instance profile and cluster SG.
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 2
+        CreditSpecification: !If
+          - IsObservabilityT3
+          - {CpuCredits: !Ref T3CpuCredits}
+          - !Ref AWS::NoValue
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeType: gp3
+              VolumeSize: !Ref ObservabilityRootVolumeGiB
+              Encrypted: true
+              DeleteOnTermination: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - {Key: Name, Value: !Sub '${ClusterName}-observability'}
+              - {Key: LabCluster, Value: !Ref ClusterName}
+              - {Key: Workload, Value: observability}
+          - ResourceType: volume
+            Tags:
+              - {Key: LabCluster, Value: !Ref ClusterName}
+              - {Key: DiskPurpose, Value: node-root}
+
+  AppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 2
+        CreditSpecification: !If
+          - IsAppT3
+          - {CpuCredits: !Ref T3CpuCredits}
+          - !Ref AWS::NoValue
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeType: gp3
+              VolumeSize: !Ref AppRootVolumeGiB
+              Encrypted: true
+              DeleteOnTermination: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - {Key: Name, Value: !Sub '${ClusterName}-app'}
+              - {Key: LabCluster, Value: !Ref ClusterName}
+              - {Key: Workload, Value: app}
+          - ResourceType: volume
+            Tags:
+              - {Key: LabCluster, Value: !Ref ClusterName}
+              - {Key: DiskPurpose, Value: node-root}
+
+  ObservabilityNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    DependsOn: [PrivateDefaultRouteA, PrivateDefaultRouteB]
+    Properties:
+      ClusterName: !Ref Cluster
+      NodeRole:
+        Fn::ImportValue: !Sub '${BootstrapStackName}-NodeRoleArn'
+      Subnets:
+        - Fn::ImportValue: !Sub '${BootstrapStackName}-PrivateSubnetAId'
+      InstanceTypes: [!Ref ObservabilityInstanceType]
+      AmiType: AL2023_x86_64_STANDARD
+      Version: !Ref KubernetesVersion
+      ReleaseVersion: !If [HasNodeAmiRelease, !Ref NodeAmiReleaseVersion, !Ref 'AWS::NoValue']
+      CapacityType: ON_DEMAND
+      LaunchTemplate:
+        Id: !Ref ObservabilityLaunchTemplate
+        Version: !GetAtt ObservabilityLaunchTemplate.LatestVersionNumber
+      ScalingConfig: {MinSize: 1, DesiredSize: 1, MaxSize: 1}
+      # MINIMAL avoids the normal update surge, but interrupts this single-node role.
+      UpdateConfig: {MaxUnavailable: 1, UpdateStrategy: MINIMAL}
+      Labels: {workload: observability}
+      Taints:
+        - {Key: dedicated, Value: observability, Effect: NO_SCHEDULE}
+      Tags:
+        Lifecycle: daily
+
+  AppNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    DependsOn: [PrivateDefaultRouteA, PrivateDefaultRouteB]
+    Properties:
+      ClusterName: !Ref Cluster
+      NodeRole:
+        Fn::ImportValue: !Sub '${BootstrapStackName}-NodeRoleArn'
+      Subnets:
+        - Fn::ImportValue: !Sub '${BootstrapStackName}-PrivateSubnetAId'
+      InstanceTypes: [!Ref AppInstanceType]
+      AmiType: AL2023_x86_64_STANDARD
+      Version: !Ref KubernetesVersion
+      ReleaseVersion: !If [HasNodeAmiRelease, !Ref NodeAmiReleaseVersion, !Ref 'AWS::NoValue']
+      CapacityType: ON_DEMAND
+      LaunchTemplate:
+        Id: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      ScalingConfig: {MinSize: 1, DesiredSize: 1, MaxSize: 1}
+      UpdateConfig: {MaxUnavailable: 1, UpdateStrategy: MINIMAL}
+      Labels: {workload: app}
+      Tags:
+        Lifecycle: daily
+
+  VpcCniAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: [AppNodeGroup, ObservabilityNodeGroup]
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: vpc-cni
+      AddonVersion: !If [HasVpcCniVersion, !Ref VpcCniAddonVersion, !Ref 'AWS::NoValue']
+      ResolveConflicts: OVERWRITE
+      PreserveOnDelete: false
+  KubeProxyAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: [AppNodeGroup, ObservabilityNodeGroup]
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: kube-proxy
+      AddonVersion: !If [HasKubeProxyVersion, !Ref KubeProxyAddonVersion, !Ref 'AWS::NoValue']
+      ResolveConflicts: OVERWRITE
+      PreserveOnDelete: false
+  CoreDnsAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: [AppNodeGroup, ObservabilityNodeGroup]
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: coredns
+      AddonVersion: !If [HasCoreDnsVersion, !Ref CoreDnsAddonVersion, !Ref 'AWS::NoValue']
+      ResolveConflicts: OVERWRITE
+      PreserveOnDelete: false
+  PodIdentityAgentAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: [AppNodeGroup, ObservabilityNodeGroup]
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: eks-pod-identity-agent
+      AddonVersion: !If [HasPodIdentityAgentVersion, !Ref PodIdentityAgentAddonVersion, !Ref 'AWS::NoValue']
+      ResolveConflicts: OVERWRITE
+      PreserveOnDelete: false
+  EbsCsiAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: [PodIdentityAgentAddon, VpcCniAddon, KubeProxyAddon, CoreDnsAddon]
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: aws-ebs-csi-driver
+      AddonVersion: !If [HasEbsCsiVersion, !Ref EbsCsiAddonVersion, !Ref 'AWS::NoValue']
+      ResolveConflicts: OVERWRITE
+      PreserveOnDelete: false
+      PodIdentityAssociations:
+        - ServiceAccount: ebs-csi-controller-sa
+          RoleArn:
+            Fn::ImportValue: !Sub '${BootstrapStackName}-EbsCsiRoleArn'
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+  ClusterArn:
+    Value: !GetAtt Cluster.Arn
+  ClusterEndpoint:
+    Value: !GetAtt Cluster.Endpoint
+  KubeconfigCommand:
+    Value: !Sub 'aws eks update-kubeconfig --region ${AWS::Region} --name ${ClusterName}'
+  NatGatewayId:
+    Value: !Ref NatGateway
+  NatPublicIp:
+    Value: !Ref NatEip
+  ObservabilityPlacement:
+    Value: 'nodeSelector workload=observability; toleration dedicated=observability:NoSchedule'
+  AppPlacement:
+    Value: 'nodeSelector workload=app'
