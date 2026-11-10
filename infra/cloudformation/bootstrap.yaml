@@ -1,15 +1,13 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  Persistent foundation for the four-person EKS observability lab.
-  Keep this stack between sessions; deploy daily-eks.yaml separately.
-
+  Persistent foundation for the four-person EKS observability lab. Keep this stack between sessions; deploy daily-eks.yaml separately.
 Parameters:
   ProjectName:
     Type: String
-    Default: observability-lab
+    Default: final-sprint
     MinLength: 3
     MaxLength: 32
-    AllowedPattern: '[a-z][a-z0-9-]*'
+    AllowedPattern: "[a-z][a-z0-9-]*"
     Description: Stable project tag and backup vault name prefix.
   VpcCidr:
     Type: String
@@ -18,9 +16,11 @@ Parameters:
   AvailabilityZoneA:
     Type: AWS::EC2::AvailabilityZone::Name
     Description: First AZ in this region. Both lab workers run here.
+    Default: ap-northeast-2a
   AvailabilityZoneB:
     Type: AWS::EC2::AvailabilityZone::Name
     Description: Different AZ in this region, required for EKS control plane subnets.
+    Default: ap-northeast-2c
   PublicSubnetACidr:
     Type: String
     Default: 10.42.0.0/24
@@ -35,22 +35,17 @@ Parameters:
     Default: 10.42.11.0/24
   BackupVaultKmsKeyArn:
     Type: String
-    Default: ''
-    AllowedPattern: '^$|^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[a-zA-Z0-9-]+$'
+    Default: ""
+    AllowedPattern: "^$|^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[a-zA-Z0-9-]+$"
     Description: >-
-      Optional existing same-region KMS key ARN. Empty uses the AWS-managed
-      Backup key, avoiding a new customer-managed key monthly charge.
-      The key policy must allow the backup role; do not delete the key.
-
+      Optional existing same-region KMS key ARN. Empty uses the AWS-managed Backup key, avoiding a new customer-managed key monthly charge. The key policy must allow the backup role; do not delete the key.
 Conditions:
-  HasBackupVaultKmsKey: !Not [!Equals [!Ref BackupVaultKmsKeyArn, '']]
-
+  HasBackupVaultKmsKey: !Not [!Equals [!Ref BackupVaultKmsKeyArn, ""]]
 Rules:
   DistinctAvailabilityZones:
     Assertions:
       - Assert: !Not [!Equals [!Ref AvailabilityZoneA, !Ref AvailabilityZoneB]]
         AssertDescription: AvailabilityZoneA and AvailabilityZoneB must be different.
-
 Resources:
   Vpc:
     Type: AWS::EC2::VPC
@@ -59,14 +54,13 @@ Resources:
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
-        - {Key: Name, Value: !Sub '${ProjectName}-vpc'}
-        - {Key: Project, Value: !Ref ProjectName}
-
+        - { Key: Name, Value: !Sub "${ProjectName}-vpc" }
+        - { Key: Project, Value: !Ref ProjectName }
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
-        - {Key: Project, Value: !Ref ProjectName}
+        - { Key: Project, Value: !Ref ProjectName }
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
@@ -77,7 +71,7 @@ Resources:
     Properties:
       VpcId: !Ref Vpc
       Tags:
-        - {Key: Name, Value: !Sub '${ProjectName}-public'}
+        - { Key: Name, Value: !Sub "${ProjectName}-public" }
   PublicDefaultRoute:
     Type: AWS::EC2::Route
     DependsOn: InternetGatewayAttachment
@@ -85,7 +79,6 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
-
   PublicSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
@@ -94,9 +87,9 @@ Resources:
       CidrBlock: !Ref PublicSubnetACidr
       MapPublicIpOnLaunch: true
       Tags:
-        - {Key: Name, Value: !Sub '${ProjectName}-public-a'}
-        - {Key: Project, Value: !Ref ProjectName}
-        - {Key: kubernetes.io/role/elb, Value: '1'}
+        - { Key: Name, Value: !Sub "${ProjectName}-public-a" }
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: kubernetes.io/role/elb, Value: "1" }
   PublicSubnetB:
     Type: AWS::EC2::Subnet
     Properties:
@@ -105,9 +98,9 @@ Resources:
       CidrBlock: !Ref PublicSubnetBCidr
       MapPublicIpOnLaunch: true
       Tags:
-        - {Key: Name, Value: !Sub '${ProjectName}-public-b'}
-        - {Key: Project, Value: !Ref ProjectName}
-        - {Key: kubernetes.io/role/elb, Value: '1'}
+        - { Key: Name, Value: !Sub "${ProjectName}-public-b" }
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: kubernetes.io/role/elb, Value: "1" }
   PublicSubnetARouteAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
@@ -118,7 +111,6 @@ Resources:
     Properties:
       SubnetId: !Ref PublicSubnetB
       RouteTableId: !Ref PublicRouteTable
-
   # Private default routes intentionally live in daily-eks.yaml, together with
   # its NAT gateway and EIP. Bootstrap alone has no NAT hourly/IP charges.
   PrivateSubnetA:
@@ -129,9 +121,9 @@ Resources:
       CidrBlock: !Ref PrivateSubnetACidr
       MapPublicIpOnLaunch: false
       Tags:
-        - {Key: Name, Value: !Sub '${ProjectName}-private-a'}
-        - {Key: Project, Value: !Ref ProjectName}
-        - {Key: kubernetes.io/role/internal-elb, Value: '1'}
+        - { Key: Name, Value: !Sub "${ProjectName}-private-a" }
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: kubernetes.io/role/internal-elb, Value: "1" }
   PrivateSubnetB:
     Type: AWS::EC2::Subnet
     Properties:
@@ -140,21 +132,21 @@ Resources:
       CidrBlock: !Ref PrivateSubnetBCidr
       MapPublicIpOnLaunch: false
       Tags:
-        - {Key: Name, Value: !Sub '${ProjectName}-private-b'}
-        - {Key: Project, Value: !Ref ProjectName}
-        - {Key: kubernetes.io/role/internal-elb, Value: '1'}
+        - { Key: Name, Value: !Sub "${ProjectName}-private-b" }
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: kubernetes.io/role/internal-elb, Value: "1" }
   PrivateRouteTableA:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref Vpc
       Tags:
-        - {Key: Name, Value: !Sub '${ProjectName}-private-a'}
+        - { Key: Name, Value: !Sub "${ProjectName}-private-a" }
   PrivateRouteTableB:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref Vpc
       Tags:
-        - {Key: Name, Value: !Sub '${ProjectName}-private-b'}
+        - { Key: Name, Value: !Sub "${ProjectName}-private-b" }
   PrivateSubnetARouteAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
@@ -165,133 +157,139 @@ Resources:
     Properties:
       SubnetId: !Ref PrivateSubnetB
       RouteTableId: !Ref PrivateRouteTableB
-
   ClusterRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: {Service: eks.amazonaws.com}
+            Principal: { Service: eks.amazonaws.com }
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEKSClusterPolicy'
-
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSClusterPolicy"
   NodeRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: {Service: ec2.amazonaws.com}
+            Principal: { Service: ec2.amazonaws.com }
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEKSWorkerNodePolicy'
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly'
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
         # Lab simplification: CNI permissions remain on the node role so the
         # initial CNI can bootstrap before Pod Identity agents are available.
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEKS_CNI_Policy'
-
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKS_CNI_Policy"
   EbsCsiRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: {Service: pods.eks.amazonaws.com}
-            Action: [sts:AssumeRole, sts:TagSession]
+            Principal: { Service: pods.eks.amazonaws.com }
+            Action: ["sts:AssumeRole", "sts:TagSession"]
             Condition:
               StringEquals:
                 aws:RequestTag/kubernetes-namespace: kube-system
                 aws:RequestTag/kubernetes-service-account: ebs-csi-controller-sa
       ManagedPolicyArns:
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEBSCSIDriverPolicyV2'
-
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEBSCSIDriverPolicyV2"
   BackupRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: {Service: backup.amazonaws.com}
+            Principal: { Service: backup.amazonaws.com }
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup'
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores'
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores"
       Policies: !If
         - HasBackupVaultKmsKey
         - - PolicyName: ExistingBackupVaultKey
             PolicyDocument:
-              Version: '2012-10-17'
+              Version: "2012-10-17"
               Statement:
                 - Effect: Allow
-                  Action: [kms:DescribeKey, kms:Encrypt, kms:Decrypt, 'kms:GenerateDataKey*', 'kms:ReEncrypt*']
+                  Action:
+                    [
+                      "kms:DescribeKey",
+                      "kms:Encrypt",
+                      "kms:Decrypt",
+                      "kms:GenerateDataKey*",
+                      "kms:ReEncrypt*",
+                    ]
                   Resource: !Ref BackupVaultKmsKeyArn
                 - Effect: Allow
                   Action: kms:CreateGrant
                   Resource: !Ref BackupVaultKmsKeyArn
                   Condition:
-                    Bool: {kms:GrantIsForAWSResource: 'true'}
+                    Bool: { "kms:GrantIsForAWSResource": "true" }
         - !Ref AWS::NoValue
-
   BackupVault:
     Type: AWS::Backup::BackupVault
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BackupVaultName: !Sub '${ProjectName}-backups'
-      EncryptionKeyArn: !If [HasBackupVaultKmsKey, !Ref BackupVaultKmsKeyArn, !Ref 'AWS::NoValue']
+      BackupVaultName: !Sub "${ProjectName}-backups"
+      EncryptionKeyArn:
+        !If [
+          HasBackupVaultKmsKey,
+          !Ref BackupVaultKmsKeyArn,
+          !Ref "AWS::NoValue",
+        ]
       BackupVaultTags:
         Project: !Ref ProjectName
         Lifecycle: persistent
-
 Outputs:
   ProjectName:
     Value: !Ref ProjectName
-    Export: {Name: !Sub '${AWS::StackName}-ProjectName'}
+    Export: { Name: !Sub "${AWS::StackName}-ProjectName" }
   VpcId:
     Value: !Ref Vpc
-    Export: {Name: !Sub '${AWS::StackName}-VpcId'}
+    Export: { Name: !Sub "${AWS::StackName}-VpcId" }
   PublicSubnetAId:
     Value: !Ref PublicSubnetA
-    Export: {Name: !Sub '${AWS::StackName}-PublicSubnetAId'}
+    Export: { Name: !Sub "${AWS::StackName}-PublicSubnetAId" }
   PublicSubnetBId:
     Value: !Ref PublicSubnetB
-    Export: {Name: !Sub '${AWS::StackName}-PublicSubnetBId'}
+    Export: { Name: !Sub "${AWS::StackName}-PublicSubnetBId" }
   PrivateSubnetAId:
     Value: !Ref PrivateSubnetA
-    Export: {Name: !Sub '${AWS::StackName}-PrivateSubnetAId'}
+    Export: { Name: !Sub "${AWS::StackName}-PrivateSubnetAId" }
   PrivateSubnetBId:
     Value: !Ref PrivateSubnetB
-    Export: {Name: !Sub '${AWS::StackName}-PrivateSubnetBId'}
+    Export: { Name: !Sub "${AWS::StackName}-PrivateSubnetBId" }
   PrivateRouteTableAId:
     Value: !Ref PrivateRouteTableA
-    Export: {Name: !Sub '${AWS::StackName}-PrivateRouteTableAId'}
+    Export: { Name: !Sub "${AWS::StackName}-PrivateRouteTableAId" }
   PrivateRouteTableBId:
     Value: !Ref PrivateRouteTableB
-    Export: {Name: !Sub '${AWS::StackName}-PrivateRouteTableBId'}
+    Export: { Name: !Sub "${AWS::StackName}-PrivateRouteTableBId" }
   WorkerAvailabilityZone:
     Value: !GetAtt PrivateSubnetA.AvailabilityZone
-    Export: {Name: !Sub '${AWS::StackName}-WorkerAvailabilityZone'}
+    Export: { Name: !Sub "${AWS::StackName}-WorkerAvailabilityZone" }
   ClusterRoleArn:
     Value: !GetAtt ClusterRole.Arn
-    Export: {Name: !Sub '${AWS::StackName}-ClusterRoleArn'}
+    Export: { Name: !Sub "${AWS::StackName}-ClusterRoleArn" }
   NodeRoleArn:
     Value: !GetAtt NodeRole.Arn
-    Export: {Name: !Sub '${AWS::StackName}-NodeRoleArn'}
+    Export: { Name: !Sub "${AWS::StackName}-NodeRoleArn" }
   EbsCsiRoleArn:
     Value: !GetAtt EbsCsiRole.Arn
-    Export: {Name: !Sub '${AWS::StackName}-EbsCsiRoleArn'}
+    Export: { Name: !Sub "${AWS::StackName}-EbsCsiRoleArn" }
   BackupRoleArn:
     Value: !GetAtt BackupRole.Arn
-    Export: {Name: !Sub '${AWS::StackName}-BackupRoleArn'}
+    Export: { Name: !Sub "${AWS::StackName}-BackupRoleArn" }
   BackupVaultName:
     Value: !Ref BackupVault
-    Export: {Name: !Sub '${AWS::StackName}-BackupVaultName'}
+    Export: { Name: !Sub "${AWS::StackName}-BackupVaultName" }
   BackupVaultArn:
     Value: !GetAtt BackupVault.BackupVaultArn
-    Export: {Name: !Sub '${AWS::StackName}-BackupVaultArn'}
+    Export: { Name: !Sub "${AWS::StackName}-BackupVaultArn" }
