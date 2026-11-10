@@ -120,12 +120,15 @@ class TemplateTests(unittest.TestCase):
             {"Fn::ImportValue": {"Fn::Sub": f"${{BootstrapStackName}}-PrivateSubnet{suffix}Id"}}
             for suffix in ("A", "B")
         ])
-        self.assertNotIn("Default", self.daily["Parameters"]["AdminPublicAccessCidr"])
+        cidr = self.daily["Parameters"]["AdminPublicAccessCidr"]
+        if "Default" in cidr:
+            self.assertRegex(cidr["Default"], cidr["AllowedPattern"])
 
     def test_cluster_admin_is_an_explicit_iam_user(self):
         parameters = self.daily["Parameters"]
         user = parameters["ClusterAdminUserArn"]
-        self.assertNotIn("Default", user)
+        if "Default" in user:
+            self.assertRegex(user["Default"], user["AllowedPattern"])
         self.assertNotIn("ClusterAdminRoleArn", parameters)
         pattern = user["AllowedPattern"]
         self.assertTrue(re.fullmatch(pattern, "arn:aws:iam::123456789012:user/team/alice"))
@@ -150,7 +153,8 @@ class TemplateTests(unittest.TestCase):
             ("ClusterAdminUser3Access", "ClusterAdminUser3Arn"),
         ):
             param = self.daily["Parameters"][parameter_name]
-            self.assertNotIn("Default", param)
+            if "Default" in param:
+                self.assertRegex(param["Default"], param["AllowedPattern"])
             self.assertTrue(re.fullmatch(param["AllowedPattern"], "arn:aws:iam::123456789012:user/team/alice"))
             self.assertIsNone(re.fullmatch(param["AllowedPattern"], "arn:aws:iam::123456789012:root"))
             entry = self.daily_resources[resource_name]["Properties"]

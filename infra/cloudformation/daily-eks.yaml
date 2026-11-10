@@ -45,7 +45,7 @@ Parameters:
     AllowedValues: [t3.xlarge, m6i.xlarge]
   AppInstanceType:
     Type: String
-    Default: t3.medium
+    Default: t3.large
     AllowedValues: [t3.large, m6i.large]
   T3CpuCredits:
     Type: String
@@ -96,10 +96,8 @@ Rules:
           !Not [!Equals [!Ref ClusterAdminUser2Arn, !Ref ClusterAdminUser3Arn]]
         AssertDescription: ClusterAdminUser2Arn and ClusterAdminUser3Arn must be different.
 Conditions:
-  IsObservabilityT3: !Or
-    - !Equals [!Ref ObservabilityInstanceType, t3.xlarge]
-  IsAppT3: !Or
-    - !Equals [!Ref AppInstanceType, t3.large]
+  IsObservabilityT3: !Equals [!Ref ObservabilityInstanceType, t3.xlarge]
+  IsAppT3: !Equals [!Ref AppInstanceType, t3.large]
   HasNodeAmiRelease: !Not [!Equals [!Ref NodeAmiReleaseVersion, ""]]
   HasVpcCniVersion: !Not [!Equals [!Ref VpcCniAddonVersion, ""]]
   HasKubeProxyVersion: !Not [!Equals [!Ref KubeProxyAddonVersion, ""]]
