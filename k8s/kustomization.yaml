@@ -9,8 +9,8 @@ resources:
   - 40-ingress.yaml
 images:
   - name: practice-board-api
-    newName: example.invalid/practice-board-api
-    newTag: replace-me
+    newName: 410710358982.dkr.ecr.ap-northeast-2.amazonaws.com/practice-board-web-be
+    newTag: latest
   - name: practice-board-web
-    newName: example.invalid/practice-board-web
-    newTag: replace-me
+    newName: 410710358982.dkr.ecr.ap-northeast-2.amazonaws.com/practice-board-web-fe
+    newTag: latest
