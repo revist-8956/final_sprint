@@ -1,0 +1,68 @@
+# be/ 가 바뀌면: 테스트가 통과해야 이미지를 만들어 ECR에 올린다
+name: main-be
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "be/**"
+      - ".github/workflows/main-be.yml"
+  pull_request:
+    paths:
+      - "be/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-be-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: practice-board-web-be   # k8s/20-api.yaml 의 image 이름과 맞춤
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: be
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: be/pom.xml
+      - run: mvn -B verify   # 컴파일 + 테스트 + jar 패키징
+
+  build-and-push:
+    needs: test
+    # PR에서는 테스트만, main 반영 때만 이미지 push
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # AWS OIDC
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: be
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha,scope=be
+          cache-to: type=gha,mode=max,scope=be
