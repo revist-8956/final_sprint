@@ -21,7 +21,7 @@ concurrency:
 
 env:
   AWS_REGION: ap-northeast-2
-  ECR_REPOSITORY: practice-board-web   # k8s/30-web.yaml 의 image 이름과 맞춤
+  ECR_REPOSITORY: practice-board-web-fe   # k8s/30-web.yaml 의 image 이름과 맞춤
 
 jobs:
   test:
