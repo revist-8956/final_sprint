@@ -1,6 +1,6 @@
 # Argo CD App of Apps
 
-`root-application.yaml`이 `apps/`의 Application을 관리하고, 각 Application이 공식 Helm 차트로 KEDA와 Karpenter를 설치합니다. Argo CD가 `argocd` 네임스페이스에 이미 설치되어 있고 기본 프로젝트가 대상 저장소와 클러스터 리소스를 허용한다고 가정합니다.
+`root-application.yaml`이 `apps/`의 Application을 관리하고, 각 Application이 공식 Helm 차트로 KEDA와 Karpenter를 설치합니다. Argo CD가 `default` 네임스페이스에 이미 설치되어 있고 기본 프로젝트가 대상 저장소와 클러스터 리소스를 허용한다고 가정합니다.
 
 ## 배포 전 설정
 
@@ -17,7 +17,7 @@ Karpenter 컨트롤러는 기존 관리형 노드에서 실행되며 이 환경�
 
 ```bash
 kubectl apply -f k8s/argocd/root-application.yaml
-kubectl get applications -n argocd
+kubectl get applications -n default
 kubectl get pods -n keda
 kubectl get pods -n karpenter
 kubectl -n kube-system rollout status deployment/aws-load-balancer-controller
