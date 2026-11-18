@@ -11,7 +11,7 @@
 5. `karpenter/nodeclass.yaml`의 instance profile, private subnet과 보안 그룹 태그, AMI alias를 실제 환경에 맞춥니다. 기본값은 `final-sprint-cluster` 및 `final-sprint` 프로젝트에 맞춰져 있습니다. AL2023 AMI `v20261112`는 서울 리전 EKS 1.37의 권장 릴리스 조회값이며, 배포 전 검증한 AMI로 교체하고 주기적으로 갱신합니다.
 6. `karpenter/nodepool.yaml`은 `workload: app` 라벨, on-demand `t3.large`/`t3.xlarge`, CPU 8 한도로 구성합니다. 한도는 급격한 확장 중 일시적으로 초과될 수 있고 비용 상한은 아닙니다. 추가 노드는 두 private subnet에 생성될 수 있습니다. Spot 중단 처리 설정은 포함하지 않습니다.
 
-Karpenter 컨트롤러는 기존 관리형 노드에서 실행되며 이 환경의 taint 없는 관리형 노드가 한 대이므로 replica를 1개로 설정했습니다. `karpenter-config` Application은 CRD 설치 이전에 동기화될 수 있으므로 재시도하도록 구성되어 있습니다. NodePool은 스케줄되지 않는 호환 Pod가 있을 때 노드를 생성하며, 기존 앱 Deployment의 리소스 요청과 `workload: app` 조건을 확인해야 합니다.
+Karpenter 컨트롤러는 기존 관리형 노드에서 실행되며 이 환경의 taint 없는 관리형 노드가 한 대이므로 replica를 1개로 설정했습니다. `karpenter` Application은 다중 소스로 Helm 차트와 Git의 NodePool·EC2NodeClass를 함께 동기화합니다. 최초 동기화가 CRD 준비 시점 때문에 실패하면 상태를 확인한 뒤 다시 동기화합니다. NodePool은 스케줄되지 않는 호환 Pod가 있을 때 노드를 생성하며, 기존 앱 Deployment의 리소스 요청과 `workload: app` 조건을 확인해야 합니다.
 
 설정 및 커밋 후 최초 한 번 적용합니다.
 

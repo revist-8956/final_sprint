@@ -5,16 +5,19 @@ metadata:
   namespace: argocd
 spec:
   project: default
-  source:
-    repoURL: public.ecr.aws/karpenter
-    chart: karpenter
-    targetRevision: 1.15.2
-    helm:
-      releaseName: karpenter
-      valuesObject:
-        replicas: 1
-        settings:
-          clusterName: final-sprint-cluster
+  sources:
+    - repoURL: public.ecr.aws/karpenter
+      chart: karpenter
+      targetRevision: 1.15.2
+      helm:
+        releaseName: karpenter
+        valuesObject:
+          replicas: 1
+          settings:
+            clusterName: final-sprint-cluster
+    - repoURL: https://github.com/revist-8956/final_sprint.git
+      targetRevision: main
+      path: k8s/argocd/karpenter
   destination:
     server: https://kubernetes.default.svc
     namespace: karpenter
