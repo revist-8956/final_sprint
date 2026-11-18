@@ -1,6 +1,7 @@
 """Static lab invariants; no credentials or AWS API calls. Requires PyYAML."""
 
 from pathlib import Path
+import json
 import re
 import unittest
 
@@ -202,7 +203,77 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(csi["Properties"]["PodIdentityAssociations"][0]["ServiceAccount"], "ebs-csi-controller-sa")
         policies = self.base_resources["EbsCsiRole"]["Properties"]["ManagedPolicyArns"]
         self.assertIn({"Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonEBSCSIDriverPolicyV2"}, policies)
-        self.assertNotIn("AWS::EKS::PodIdentityAssociation", [r["Type"] for r in self.daily_resources.values()])
+        standalone = [r["Properties"] for r in self.daily_resources.values()
+                      if r["Type"] == "AWS::EKS::PodIdentityAssociation"]
+        self.assertNotIn("ebs-csi-controller-sa", [r["ServiceAccount"] for r in standalone])
+
+    def test_karpenter_has_dedicated_node_identity_and_scoped_controller(self):
+        profile = self.daily_resources["KarpenterNodeInstanceProfile"]["Properties"]
+        self.assertEqual(profile["Roles"], [{"Ref": "KarpenterNodeRole"}])
+        self.assertEqual(profile["InstanceProfileName"], {"Fn::Sub": "${ClusterName}-karpenter"})
+        access = self.daily_resources["KarpenterNodeAccess"]["Properties"]
+        self.assertEqual(access["Type"], "EC2_LINUX")
+        self.assertEqual(access["PrincipalArn"], {"Fn::GetAtt": ["KarpenterNodeRole", "Arn"]})
+        self.assertNotIn("AccessPolicies", access)
+        self.assertNotIn("KubernetesGroups", access)
+        association = self.daily_resources["KarpenterPodIdentity"]
+        self.assertEqual(association["DependsOn"], "PodIdentityAgentAddon")
+        self.assertEqual(association["Properties"]["Namespace"], "karpenter")
+        self.assertEqual(association["Properties"]["ServiceAccount"], "karpenter")
+        role = self.daily_resources["KarpenterControllerRole"]["Properties"]
+        trust = role["AssumeRolePolicyDocument"]["Statement"][0]
+        self.assertEqual(trust["Principal"], {"Service": "pods.eks.amazonaws.com"})
+        self.assertEqual(set(trust["Action"]), {"sts:AssumeRole", "sts:TagSession"})
+        self.assertEqual(trust["Condition"]["StringEquals"]["aws:RequestTag/eks-cluster-name"], {"Ref": "ClusterName"})
+        passing = role["Policies"][0]["PolicyDocument"]["Statement"][0]
+        self.assertEqual(passing["Action"], "iam:PassRole")
+        self.assertEqual(passing["Resource"], access["PrincipalArn"])
+        lifecycle = json.loads(self.daily_resources["KarpenterNodeLifecyclePolicy"]["Properties"]["PolicyDocument"]["Fn::Sub"])
+        statements = {s["Sid"]: s for s in lifecycle["Statement"]}
+        for sid in ("AllowScopedEC2InstanceActionsWithTags", "AllowScopedResourceCreationTagging"):
+            self.assertEqual(statements[sid]["Condition"]["StringEquals"]["aws:RequestTag/eks:eks-cluster-name"], "${ClusterName}")
+        self.assertEqual(statements["AllowScopedDeletion"]["Condition"]["StringEquals"]["aws:ResourceTag/kubernetes.io/cluster/${ClusterName}"], "owned")
+        # Instance profiles belong to CloudFormation, not the controller.
+        controller_policy_text = json.dumps(role) + str(self.daily_resources["KarpenterResourceDiscoveryPolicy"])
+        for action in ("iam:CreateInstanceProfile", "iam:DeleteInstanceProfile", "iam:AddRoleToInstanceProfile"):
+            self.assertNotIn(action, controller_policy_text)
+
+    def test_load_balancer_identity_is_scoped_to_its_service_account(self):
+        role = self.daily_resources["LoadBalancerControllerRole"]["Properties"]
+        self.assertNotIn("RoleName", role)
+        trust = role["AssumeRolePolicyDocument"]["Statement"][0]
+        self.assertEqual(trust["Principal"], {"Service": "pods.eks.amazonaws.com"})
+        self.assertEqual(set(trust["Action"]), {"sts:AssumeRole", "sts:TagSession"})
+        self.assertEqual(trust["Condition"]["StringEquals"], {
+            "aws:RequestTag/eks-cluster-name": {"Ref": "ClusterName"},
+            "aws:RequestTag/kubernetes-namespace": "kube-system",
+            "aws:RequestTag/kubernetes-service-account": "aws-load-balancer-controller",
+        })
+        association = self.daily_resources["LoadBalancerControllerPodIdentity"]
+        self.assertEqual(association["DependsOn"], "PodIdentityAgentAddon")
+        self.assertEqual(association["Properties"], {
+            "ClusterName": {"Ref": "Cluster"},
+            "Namespace": "kube-system",
+            "ServiceAccount": "aws-load-balancer-controller",
+            "RoleArn": {"Fn::GetAtt": ["LoadBalancerControllerRole", "Arn"]},
+        })
+        self.assertEqual(role["ManagedPolicyArns"], [{"Ref": "LoadBalancerControllerPolicy"}])
+
+    def test_load_balancer_policy_preserves_upstream_mutation_guards(self):
+        policy = json.loads(self.daily_resources["LoadBalancerControllerPolicy"]["Properties"]["PolicyDocument"]["Fn::Sub"])
+        statements = policy["Statement"]
+        actions = {action for statement in statements for action in statement["Action"]}
+        for action in ("elasticloadbalancing:CreateLoadBalancer", "elasticloadbalancing:DeleteLoadBalancer",
+                       "elasticloadbalancing:RegisterTargets", "elasticloadbalancing:ModifyListenerAttributes",
+                       "ec2:CreateSecurityGroup", "wafv2:AssociateWebACL"):
+            self.assertIn(action, actions)
+        self.assertFalse(any("*" in action for action in actions))
+        slr = next(s for s in statements if "iam:CreateServiceLinkedRole" in s["Action"])
+        self.assertEqual(slr["Condition"]["StringEquals"]["iam:AWSServiceName"], "elasticloadbalancing.amazonaws.com")
+        create = next(s for s in statements if "elasticloadbalancing:CreateLoadBalancer" in s["Action"])
+        delete = next(s for s in statements if "elasticloadbalancing:DeleteLoadBalancer" in s["Action"])
+        self.assertEqual(create["Condition"]["Null"]["aws:RequestTag/elbv2.k8s.aws/cluster"], "false")
+        self.assertEqual(delete["Condition"]["Null"]["aws:ResourceTag/elbv2.k8s.aws/cluster"], "false")
 
     def test_no_backup_or_restore_magic_custom_resources(self):
         resources = list(self.base_resources.values()) + list(self.daily_resources.values())

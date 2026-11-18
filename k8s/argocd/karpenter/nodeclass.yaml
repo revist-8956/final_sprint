@@ -1,0 +1,22 @@
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: app
+spec:
+  instanceProfile: final-sprint-cluster-karpenter
+  amiSelectorTerms:
+    - alias: al2023@v20261112
+  subnetSelectorTerms:
+    - tags:
+        Project: final-sprint
+        kubernetes.io/role/internal-elb: "1"
+  securityGroupSelectorTerms:
+    - tags:
+        aws:eks:cluster-name: final-sprint-cluster
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true

@@ -1,0 +1,11 @@
+# 이전 IRSA 백업을 복원할 때만 사용합니다. Pod Identity 전환 후 새 백업에는 불필요합니다.
+version: v1
+resourceModifierRules:
+  - conditions:
+      groupResource: v1/serviceaccounts
+      resourceNameRegex: '^aws-load-balancer-controller$'
+      namespaces:
+        - kube-system
+    patches:
+      - operation: remove
+        path: /metadata/annotations/eks.amazonaws.com~1role-arn

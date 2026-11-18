@@ -7,7 +7,7 @@
 | [`bootstrap.yaml`](bootstrap.yaml) | VPC, 두 AZ의 public/private subnet 각 2개, IGW, route table, IAM 역할, Backup vault | 유지 |
 | [`daily-eks.yaml`](daily-eks.yaml) | NAT Gateway·EIP·private 기본 경로, EKS, 워커 2개, 접근 권한, 기본 Add-on·EBS CSI | 데이터 정리 후 삭제 |
 
-현재 기준은 **관측 워커 `t3.xlarge` 1대 + 앱 워커 `t3.medium` 1대**입니다. 이전 [`eks-cloudformation-backup-plan.md`](../../docs/eks-cloudformation-backup-plan.md)의 동일한 `m6i.large` 2대 견적은 과거 가정이며 현재 구성의 견적이 아닙니다.
+현재 기준은 **관측 워커 `t3.xlarge` 1대 + 앱 워커 `t3.large` 1대**입니다. 이전 [`eks-cloudformation-backup-plan.md`](../../docs/eks-cloudformation-backup-plan.md)의 동일한 `m6i.large` 2대 견적은 과거 가정이며 현재 구성의 견적이 아닙니다.
 
 ## 생성 범위와 남은 작업
 
@@ -17,7 +17,7 @@
 - public subnet A에 **NAT Gateway 1개와 EIP**를 만들고 두 private subnet의 기본 경로를 연결합니다. 워커에는 public IPv4를 주지 않으며 외부 통신은 NAT를 통과합니다. Bastion·LoadBalancer·SSH 인바운드는 만들지 않습니다.
 - **NAT Gateway·EIP·private 기본 경로는 daily 스택 소유**입니다. daily 스택을 삭제하면 함께 정리하여 쉬는 날 NAT 시간 요금이 계속 발생하지 않도록 합니다. 실제 삭제·EIP 해제 완료를 확인합니다.
 - NAT 1개는 HA 구성이 아닙니다. 향후 subnet B에 워커를 배치하면 NAT가 있는 AZ A까지의 교차 AZ 트래픽 비용도 고려해야 합니다.
-- Prometheus/Loki/Tempo/Grafana/Alloy, ArgoCD, KEDA, Karpenter와 앱 배포는 별도입니다.
+- Prometheus/Loki/Tempo/Grafana/Alloy, ArgoCD, KEDA, Karpenter, AWS Load Balancer Controller와 앱의 Kubernetes 배포는 별도입니다. 컨트롤러의 AWS 권한은 daily 스택에 포함합니다.
 - **EKS 백업 opt-in, StorageClass/PVC, 백업·복원·정리 자동화는 포함하지 않습니다.** 스택을 다시 생성해도 데이터는 자동 복원되지 않습니다.
 
 Git은 파일 보관소입니다. CloudFormation이 GitHub raw URL을 자동으로 읽는 것으로 가정하지 마세요. 저장소를 clone한 뒤 로컬 `--template-file`을 사용하거나, 콘솔에서 파일 업로드 또는 지원되는 S3 TemplateURL을 사용합니다.
@@ -36,23 +36,14 @@ public B: 별도 AZ의 public subnet 유지, NAT는 배치하지 않음
 
 ## 1. 배포 전 준비
 
-AWS CLI v2, kubectl, Python 3와 배포 권한이 필요합니다. AWS 자격증명은 로컬 프로필/SSO를 사용하고 **액세스 키·토큰을 Git에 넣지 않습니다.** 아래 명령은 저장소 루트에서 실행합니다.
+AWS CLI v2, kubectl, Python 3와 배포 권한이 필요합니다. CLI 배포·조회에는 먼저 배포 권한이 있는 AWS 자격증명으로 로그인해야 합니다. 로컬 프로필/SSO를 사용하고 **액세스 키·토큰을 Git에 넣지 않습니다.** 아래 명령은 저장소 루트에서 실행합니다. Git sync를 사용한다면 스택 파라미터는 콘솔이나 배포 파일에 지정할 수 있습니다.
 
 ```bash
 set -euo pipefail
 export AWS_REGION=ap-northeast-2
-export BOOTSTRAP_STACK=observability-bootstrap
-export DAILY_STACK=observability-daily
-export CLUSTER_NAME=observability-lab
-
-# 이 일곱 값은 본인의 환경에 맞게 먼저 export합니다.
-: "${EKS_VERSION:?현재 EKS STANDARD 지원 중인 Kubernetes 버전을 설정하세요}"
-: "${CLUSTER_ADMIN_USER_ARN:?첫 번째 IAM 사용자 ARN을 설정하세요}"
-: "${CLUSTER_ADMIN_USER_2_ARN:?두 번째 IAM 사용자 ARN을 설정하세요}"
-: "${CLUSTER_ADMIN_USER_3_ARN:?세 번째 IAM 사용자 ARN을 설정하세요}"
-: "${ADMIN_PUBLIC_CIDR:?관리자 또는 공통 VPN의 공인 IPv4 CIDR을 설정하세요}"
-: "${AVAILABILITY_ZONE_A:?서울 리전에서 사용할 첫 번째 AZ 이름을 설정하세요}"
-: "${AVAILABILITY_ZONE_B:?첫 번째와 다른 두 번째 AZ 이름을 설정하세요}"
+export BOOTSTRAP_STACK=final-sprint-bootstrap
+export DAILY_STACK=final-sprint-daily
+export CLUSTER_NAME=final-sprint-cluster
 ```
 
 - 세 `CLUSTER_ADMIN_USER...ARN`은 서로 다른 기존 IAM 사용자의 `arn:aws:iam::계정:user/사용자` 형식 ARN입니다. 역할 ARN이나 STS 세션 ARN은 사용할 수 없습니다. 각 사용자에게 EKS 클러스터 전체 관리자 권한을 부여하므로 사용자마다 본인의 자격증명을 사용하고 공유하지 않습니다.
@@ -74,7 +65,13 @@ aws sts get-caller-identity
 
 ## 2. Bootstrap: 최초 한 번 생성하고 유지
 
+같은 계정·리전에 사용할 bootstrap 스택이 이미 생성되어 있다면 다시 만들지 않고 outputs를 확인한 뒤 백업 opt-in 단계로 진행합니다. 아래는 CLI로 처음 생성하는 경우입니다.
+
 ```bash
+# 먼저 사용 가능한 서로 다른 AZ 이름을 환경 변수로 설정합니다.
+: "${AVAILABILITY_ZONE_A:?서울 리전에서 사용할 첫 번째 AZ 이름을 설정하세요}"
+: "${AVAILABILITY_ZONE_B:?첫 번째와 다른 두 번째 AZ 이름을 설정하세요}"
+
 aws cloudformation deploy \
   --region "$AWS_REGION" \
   --stack-name "$BOOTSTRAP_STACK" \
@@ -127,27 +124,7 @@ rm -f "$OPT_IN_FILE"
 
 ## 3. Daily EKS: 최초 생성과 다음 날 재생성에 같은 파일 사용
 
-```bash
-aws cloudformation deploy \
-  --region "$AWS_REGION" \
-  --stack-name "$DAILY_STACK" \
-  --template-file infra/cloudformation/daily-eks.yaml \
-  --parameter-overrides \
-    BootstrapStackName="$BOOTSTRAP_STACK" \
-    ClusterName="$CLUSTER_NAME" \
-    KubernetesVersion="$EKS_VERSION" \
-    ClusterAdminUserArn="$CLUSTER_ADMIN_USER_ARN" \
-    ClusterAdminUser2Arn="$CLUSTER_ADMIN_USER_2_ARN" \
-    ClusterAdminUser3Arn="$CLUSTER_ADMIN_USER_3_ARN" \
-    AdminPublicAccessCidr="$ADMIN_PUBLIC_CIDR"
-
-aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
-
-kubectl get nodes -L workload,topology.kubernetes.io/zone
-kubectl get pods -n kube-system -o wide
-```
-
-kubectl을 실행할 때는 먼저 세 IAM 사용자 ARN 중 본인에 해당하는 자격증명을 로컬 AWS 프로필에서 사용합니다. `aws sts get-caller-identity`로 현재 주체를 확인할 수 있습니다. 사용자마다 클러스터 API에 접근하기 위한 IAM 권한과 허용된 네트워크 경로도 필요합니다.
+### 3-1. Git sync로 배포하는 경우
 
 Git sync 배포 파일을 직접 제공하는 경우 `parameters`에 `ClusterAdminUserArn`, `ClusterAdminUser2Arn`, `ClusterAdminUser3Arn`, `AdminPublicAccessCidr`를 지정합니다. 이전 이름인 `ClusterAdminRoleArn`은 더 이상 사용하지 않습니다. 사용자 ARN은 실제 계정 값으로 교체하고, 액세스 키는 배포 파일에 넣지 않습니다. Git sync는 커밋을 실제 스택에 반영할 수 있으므로 변경사항을 배포 전에 확인합니다.
 
@@ -165,12 +142,51 @@ tags: {}
 
 이 파일을 수정한다고 클러스터가 즉시 등록되는 것은 아닙니다. Git sync가 감시하는 브랜치에 반영된 뒤 스택 생성·업데이트가 성공해야 합니다. **Git sync는 반영 즉시 실제 AWS 자원에 영향을 줄 수 있으므로** 커밋·병합 전에 파라미터와 변경 사항을 검토합니다. Access Entry가 기존에 존재한다면 중복 생성이나 교체 충돌이 없는지도 확인합니다.
 
+### 3-2. CLI로 배포하는 경우 — Git sync의 대안
+
+```bash
+# 먼저 다음 값들을 환경 변수로 설정합니다.
+: "${EKS_VERSION:?현재 EKS STANDARD 지원 중인 Kubernetes 버전을 설정하세요}"
+: "${CLUSTER_ADMIN_USER_ARN:?첫 번째 IAM 사용자 ARN을 설정하세요}"
+: "${CLUSTER_ADMIN_USER_2_ARN:?두 번째 IAM 사용자 ARN을 설정하세요}"
+: "${CLUSTER_ADMIN_USER_3_ARN:?세 번째 IAM 사용자 ARN을 설정하세요}"
+: "${ADMIN_PUBLIC_CIDR:?관리자 또는 공통 VPN의 공인 IPv4 CIDR을 설정하세요}"
+
+aws cloudformation deploy \
+  --region "$AWS_REGION" \
+  --stack-name "$DAILY_STACK" \
+  --template-file infra/cloudformation/daily-eks.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    BootstrapStackName="$BOOTSTRAP_STACK" \
+    ClusterName="$CLUSTER_NAME" \
+    KubernetesVersion="$EKS_VERSION" \
+    ClusterAdminUserArn="$CLUSTER_ADMIN_USER_ARN" \
+    ClusterAdminUser2Arn="$CLUSTER_ADMIN_USER_2_ARN" \
+    ClusterAdminUser3Arn="$CLUSTER_ADMIN_USER_3_ARN" \
+    AdminPublicAccessCidr="$ADMIN_PUBLIC_CIDR"
+```
+
+### 3-3. kubectl 접속 확인
+
+kubectl을 실행할 때는 먼저 세 IAM 사용자 ARN 중 본인에 해당하는 자격증명을 로컬 AWS 프로필에서 사용합니다. 다음은 **액세스 키 없이 IAM 콘솔 계정으로 로그인하는 예시**입니다. AWS CLI 2.32.0 이상과 해당 사용자의 `SignInLocalDevelopmentAccess` 권한이 필요합니다. 사용자마다 `eks:DescribeCluster` 권한과 허용된 네트워크 경로도 필요합니다. [AWS CLI 로그인](https://docs.aws.amazon.com/signin/latest/userguide/command-line-sign-in.html)
+
+```bash
+aws login --profile final-sprint --region "$AWS_REGION"
+export AWS_PROFILE=final-sprint
+aws sts get-caller-identity
+aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
+
+kubectl get nodes -L workload,topology.kubernetes.io/zone
+kubectl get pods -n kube-system -o wide
+```
+
 ### 기본값과 선택 파라미터
 
 | 파라미터 | 기본값/동작 |
 |---|---|
 | `ObservabilityInstanceType` | `t3.xlarge` |
-| `AppInstanceType` | `t3.medium` |
+| `AppInstanceType` | `t3.large` |
 | `ObservabilityRootVolumeGiB`, `AppRootVolumeGiB` | 각각 `20`; 데이터 PVC 용량과 별개 |
 | `T3CpuCredits` | `standard`; 크레딧 소진 시 성능 제한. `unlimited`는 추가 CPU 요금 가능 |
 | `NodeAmiReleaseVersion` | 생략 시 EKS 호환 기본 AL2023 release |
@@ -178,9 +194,46 @@ tags: {}
 
 Add-on은 VPC CNI, kube-proxy, CoreDNS, Pod Identity Agent, EBS CSI입니다. EBS CSI의 Pod Identity association은 Add-on이 소유하므로 같은 service account에 중복 association을 만들지 않습니다.
 
+### AWS Load Balancer Controller AWS 권한과 기존 IRSA 전환
+
+Daily 스택은 `kube-system/aws-load-balancer-controller`용 IAM 역할과 EKS Pod Identity association을 생성합니다. 정책은 현재 설치된 AWS Load Balancer Controller **v2.14.0**의 공식 IAM 정책을 기준으로 고정합니다. 기존 Helm 설치와 Kubernetes 서비스 계정은 이 App of Apps가 관리하지 않으며 AWS Backup에서 복원합니다. 컨트롤러를 업그레이드할 때 해당 버전의 공식 IAM 정책도 함께 검토해야 합니다. public/private 서브넷의 ELB 검색 태그는 bootstrap 스택에 이미 있습니다.
+
+2026-11-18 조회 시 기존 컨트롤러는 Helm으로 설치되어 있고, 별도의 `eksctl-final-sprint-cluster-addon-iamserviceaccount-kube-system-aws-load-balancer-controller` 스택이 만든 IRSA 역할을 사용하고 있습니다. 기존 역할과 정책은 새 daily 스택에 자동으로 가져오거나 삭제하지 않습니다. 기존 설정을 유지한 채 daily 스택의 변경 집합을 검토하고 배포한 다음, Pod Identity association과 Pod Identity Agent가 준비됐는지 확인합니다. 기존 Helm release 및 서비스 계정의 관리 방식을 유지합니다. 새 Pod Identity association은 전환 전까지 기존 IRSA 인증을 대체하지 않습니다.
+
+IRSA 자격 증명은 Pod Identity보다 우선하므로 association 생성만으로 전환되지 않습니다. **현재 클러스터를 백업하고 종료하기 전에** 다음 절차로 Pod Identity로 전환하고 실제 AWS 접근을 검증합니다. 기존 역할 ARN을 기록한 뒤 서비스 계정 주석을 제거하고 컨트롤러 Pod를 교체합니다. Helm values 또는 다른 관리 도구에 해당 주석이 설정되어 있다면 재적용으로 되살아나지 않도록 해당 설정도 제거해야 합니다.
+
+```bash
+kubectl -n kube-system get serviceaccount aws-load-balancer-controller \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}{"\n"}'
+aws eks list-pod-identity-associations --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME"
+kubectl -n kube-system rollout status daemonset/eks-pod-identity-agent
+kubectl -n kube-system annotate serviceaccount aws-load-balancer-controller eks.amazonaws.com/role-arn-
+kubectl -n kube-system rollout restart deployment/aws-load-balancer-controller
+kubectl -n kube-system rollout status deployment/aws-load-balancer-controller
+kubectl -n kube-system logs deployment/aws-load-balancer-controller --tail=100
+```
+
+새 Pod의 `AWS_CONTAINER_CREDENTIALS_FULL_URI` 환경 변수와 CloudTrail의 새 역할 사용 이력을 확인하고, 기존 Ingress가 정상 조정되는지 검증합니다. 실패하면 기록한 역할 ARN으로 주석을 복원하고 Deployment를 다시 시작해 IRSA로 되돌립니다. `eksctl delete iamserviceaccount`는 실제 서비스 계정도 삭제할 수 있으므로 전환에 사용하지 않습니다. 전환 검증 후 기존 eksctl 스택·공유 IAM 정책·OIDC 공급자의 다른 사용처를 확인한 뒤 별도 정리합니다. 클러스터 복원 시에는 기존 IAM 주석이 복원될 수 있으므로 GitOps 재개 전에 다시 확인합니다.
+
+IRSA 주석이 남아 있는 **전환 전 백업**을 복원해야 한다면 [`restore/load-balancer-pod-identity.yaml`](restore/load-balancer-pod-identity.yaml)을 복원 resource modifier로 사용할 수 있습니다. 이 파일을 복원 작업과 같은 계정·리전의 S3에 업로드하고 복원 metadata `resourceModifiers`에 S3 URI를 지정합니다. 이 규칙은 지정된 서비스 계정의 IRSA 주석만 복원 중 제거합니다. 이미 대상 서비스 계정이 존재하면 비파괴 복원으로 건너뛰며, 백업에 주석이 없으면 remove 패치가 실패할 수 있으므로 전환 후 생성한 백업에는 이 규칙을 쓰지 않습니다. AWS Backup은 패치 실패 시 원본 객체를 복원할 수 있으므로 복원 작업의 modification 실패 및 주석을 반드시 확인합니다. 이 파일은 S3에 자동 업로드되거나 복원 작업에 자동 연결되지 않습니다. [AWS Backup 복원 modifiers](https://docs.aws.amazon.com/aws-backup/latest/devguide/restoring-eks.html)
+
+기존 백업으로 재생성하는 경우 daily 스택이 IAM 권한과 association을 준비하며, AWS Backup이 백업에 포함된 Argo CD·Application·Load Balancer Controller 등 Kubernetes 리소스를 복원합니다. 복원된 Argo CD가 정상 동작하면 재설치나 부모 Application의 재등록은 필요하지 않습니다. 복원 전에 Argo CD를 새로 설치하지 말고, 복원 결과와 IRSA 주석·컨트롤러 권한을 확인한 뒤 GitOps를 재개합니다. 복원된 컨트롤러가 복원 중 동작할 수 있으므로 GitOps와 컨트롤러 실행을 제어하는 방법은 사전 복구시험에서 검증합니다. 백업 없이 처음 구성하는 경우에만 Argo CD 설치와 부모 Application 등록이 별도로 필요합니다. 자세한 내용은 [`k8s/argocd/README.md`](../../k8s/argocd/README.md)를 참고합니다.
+
+공식 근거: [AWS Load Balancer Controller v2.14.0 IAM 정책](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/v2.14.0/docs/install/iam_policy.json), [Pod Identity 자격 증명 우선순위](https://docs.aws.amazon.com/eks/latest/userguide/pod-id-minimum-sdk.html), [eksctl 서비스 계정 관리](https://docs.aws.amazon.com/eks/latest/eksctl/iamserviceaccounts.html).
+
+### Karpenter AWS 권한
+
+Daily 스택은 Karpenter 전용 노드 IAM 역할, `${ClusterName}-karpenter` 인스턴스 프로파일, `EC2_LINUX` Access Entry와 컨트롤러 IAM 역할·Pod Identity association을 생성합니다. `karpenter` 네임스페이스의 `karpenter` 서비스 계정을 사용하는 Helm 설정과 연결됩니다. 프로파일 이름을 지정하므로 CLI 배포에는 `CAPABILITY_NAMED_IAM`이 필요하고, Git sync에서도 IAM 생성 권한과 해당 capability를 허용해야 합니다.
+
+컨트롤러는 공식 Karpenter 1.15.2의 EC2 lifecycle·리소스 조회·EKS endpoint 조회 정책을 사용하며 `iam:PassRole`은 전용 노드 역할로 제한합니다. 인스턴스 프로파일은 CloudFormation이 관리하므로 컨트롤러에 프로파일 생성·변경·삭제 권한을 주지 않습니다. 중단 처리 SQS/EventBridge와 Zonal Shift는 구성하지 않았으며 이에 대한 컨트롤러 권한도 없습니다. 노드 역할의 CNI 권한은 기존 관리형 노드의 초기 네트워킹 패턴을 따릅니다.
+
+`KarpenterInstanceProfileName`, `KarpenterNodeRoleArn`, `KarpenterControllerRoleArn`, `KarpenterSecurityGroupId` outputs로 생성 결과를 확인합니다. Kubernetes 설정 및 배포 방법은 [`k8s/argocd/README.md`](../../k8s/argocd/README.md)를 참고합니다. Karpenter가 만든 노드는 CloudFormation 소유가 아니므로 **daily 스택 삭제 전에 NodePool을 비우고 Karpenter 노드 및 launch template 정리를 완료**해야 합니다. 노드가 남아 있으면 역할·프로파일 삭제가 실패하거나 EC2 비용이 계속 발생할 수 있습니다.
+
+공식 근거: [Karpenter 1.15 CloudFormation 권한](https://karpenter.sh/v1.15/reference/cloudformation/), [v1.15.2 upstream 템플릿](https://github.com/aws/karpenter-provider-aws/blob/v1.15.2/website/content/en/preview/getting-started/getting-started-with-karpenter/cloudformation.yaml).
+
 각 node group은 1대이며 업데이트 전략은 `MINIMAL`입니다. 일반 업데이트 surge를 피하는 대신 **단일 역할 노드 업데이트 중 서비스 중단을 허용**합니다. 이것이 전체 AWS 계정 비용 상한이나 Karpenter 추가 노드 상한은 아닙니다.
 
-## 4. 최초 클러스터와 복원 클러스터를 구분
+## 4. 최초 학습 환경 구성
 
 ### 최초 학습: 관측용 StorageClass/PVC와 앱을 별도 배포
 
@@ -213,32 +266,6 @@ tolerations:
 ```
 
 앱은 `nodeSelector: {workload: app}`로 배치하고 데이터 PVC를 만들지 않습니다. 노드 로컬 로그·메트릭을 수집하는 Alloy 등 DaemonSet은 **양쪽 노드**에서 실행해야 하므로 관측 노드 전용 selector를 무조건 적용하지 않습니다. 기본 CoreDNS/CSI controller 등 시스템 Pod는 앱 노드에도 배치될 수 있습니다.
-
-### 다음 날: 빈 EKS 생성 후 기존 클러스터로 복원
-
-1. 위 daily 템플릿으로 빈 대상 EKS·노드·CSI를 생성합니다.
-2. **StorageClass·관측 Helm release·ArgoCD 앱을 먼저 적용하지 않습니다.** AWS Backup은 이미 존재하는 Kubernetes 오브젝트를 덮어쓰지 않습니다.
-3. AWS Backup 콘솔에서 전날 **composite recovery point → Restore full EKS cluster → Existing cluster**를 선택하고 방금 생성한 EKS를 지정합니다.
-4. 각 EBS 자식 복원에서 bootstrap stack의 `WorkerAvailabilityZone`과 맞는 AZ를 선택합니다. bootstrap outputs의 `BackupRoleArn`을 복원 역할로 사용합니다.
-5. 원본 태그 복사를 선택하고, 복원된 데이터 EBS에 `ebs.csi.aws.com/cluster=true` 태그가 있는지 확인합니다. 현재 `AmazonEBSCSIDriverPolicyV2`는 해당 태그를 사용하므로 누락 시 CSI 작업이 실패할 수 있습니다.
-6. 부모·자식 복원 결과와 skipped/failed 오브젝트를 확인하고 PVC `Bound`, Pod `Ready`, 이전 데이터 조회를 검증합니다. 그 후 GitOps를 재개합니다.
-
-기본 Add-on은 CloudFormation이 관리합니다. 복원이 기존 시스템 오브젝트를 건너뛸 수 있으므로 이를 백업 당시의 시스템 설정까지 덮어쓴 것으로 해석하지 않습니다. **최초 원본 삭제 전 복구시험**을 통과해야 합니다.
-
-### 백업 범위: 워커 루트 EBS와 관측 데이터 EBS
-
-**현재 템플릿과 EKS composite 백업 계획만으로는 워커의 루트 EBS를 백업하지 않습니다.** 또한 템플릿은 Backup vault와 IAM 역할만 생성하며, 백업 계획·작업을 자동 생성하거나 실행하지 않습니다.
-
-| 대상 | EKS composite 백업 | 일일 스택 재생성 시 |
-|---|---|---|
-| EKS/Kubernetes 설정 | 지원되는 범위의 설정 백업. 백업 작업을 별도로 실행·검증해야 함 | 일부는 CloudFormation으로 만들고, 나머지는 복원. 기존 오브젝트는 덮어쓰지 않음 |
-| 관측 데이터 EBS | 지원되는 EBS CSI 기반 PVC라면 별도 실행한 EKS 백업의 자식 복구 지점에 포함 | 백업에서 새 EBS로 복원하고 PVC 연결을 검증 |
-| 두 워커의 **루트 EBS** | **포함되지 않음** | 노드 종료 시 `DeleteOnTermination: true`에 따라 삭제되고, 새 노드가 생성될 때 새 루트 EBS를 생성 |
-| 노드 루트의 파일·이미지 캐시·컨테이너 로그 | 별도 백업하지 않으면 보존되지 않음 | 자동 복원되지 않음 |
-
-EKS 백업이 포함하는 영구 데이터는 **지원되는 CSI 드라이버로 PVC에 연결된 저장소**입니다. 노드 루트 디스크는 여기에 해당하지 않습니다. 정확한 자식 복구 지점과 백업 상태를 확인하고, 루트 파일시스템이나 `hostPath`/`emptyDir`에 유일한 데이터를 저장하지 마세요. [AWS Backup EKS 백업 범위](https://docs.aws.amazon.com/aws-backup/latest/devguide/eks-backups.html)
-
-노드 루트 EBS가 꼭 필요하면 EC2 인스턴스 백업이나 해당 EBS 스냅샷을 **별도로** 구성할 수 있지만, 지금 템플릿에는 없습니다. 별도 백업에는 비용이 들고, 백업에서 EC2/볼륨을 복원한다고 새 Managed Node Group의 루트 디스크에 자동으로 붙는 것은 아닙니다. 복원 절차와 노드 부트스트랩을 별도로 설계·검증해야 합니다. [AWS Backup EC2 백업](https://docs.aws.amazon.com/aws-backup/latest/devguide/working-with-supported-services.html)
 
 ## 5. 매일 종료: 데이터 정리가 스택 삭제보다 먼저
 
@@ -273,6 +300,32 @@ aws ec2 describe-volumes --region "$AWS_REGION" \
   --query 'Volumes[].{ID:VolumeId,State:State,AZ:AvailabilityZone,Tags:Tags,Attachments:Attachments}' \
   --output table
 ```
+
+## 6. 다음 날: 빈 EKS 생성 후 기존 클러스터로 복원
+
+1. 위 daily 템플릿으로 빈 대상 EKS·노드·CSI를 생성합니다.
+2. **StorageClass·관측 Helm release·ArgoCD 앱을 먼저 적용하지 않습니다.** AWS Backup은 이미 존재하는 Kubernetes 오브젝트를 덮어쓰지 않습니다.
+3. AWS Backup 콘솔에서 전날 **composite recovery point → Restore full EKS cluster → Existing cluster**를 선택하고 방금 생성한 EKS를 지정합니다.
+4. 각 EBS 자식 복원에서 bootstrap stack의 `WorkerAvailabilityZone`과 맞는 AZ를 선택합니다. bootstrap outputs의 `BackupRoleArn`을 복원 역할로 사용합니다.
+5. 전환 전 IRSA 백업이면 위 resource modifier를 복원 작업에 지정하거나 복원 직후 IRSA 주석 제거·Pod 재시작을 수행합니다. 원본 태그 복사를 선택하고, 복원된 데이터 EBS에 `ebs.csi.aws.com/cluster=true` 태그가 있는지 확인합니다. 현재 `AmazonEBSCSIDriverPolicyV2`는 해당 태그를 사용하므로 누락 시 CSI 작업이 실패할 수 있습니다.
+6. 부모·자식 복원 결과와 skipped/failed 오브젝트를 확인하고 PVC `Bound`, Pod `Ready`, 이전 데이터 조회를 검증합니다. 그 후 GitOps를 재개합니다.
+
+기본 Add-on은 CloudFormation이 관리합니다. 복원이 기존 시스템 오브젝트를 건너뛸 수 있으므로 이를 백업 당시의 시스템 설정까지 덮어쓴 것으로 해석하지 않습니다. **최초 원본 삭제 전 복구시험**을 통과해야 합니다.
+
+## 참고: 백업 범위 — 워커 루트 EBS와 관측 데이터 EBS
+
+**현재 템플릿과 EKS composite 백업 계획만으로는 워커의 루트 EBS를 백업하지 않습니다.** 또한 템플릿은 Backup vault와 IAM 역할만 생성하며, 백업 계획·작업을 자동 생성하거나 실행하지 않습니다.
+
+| 대상 | EKS composite 백업 | 일일 스택 재생성 시 |
+|---|---|---|
+| EKS/Kubernetes 설정 | 지원되는 범위의 설정 백업. 백업 작업을 별도로 실행·검증해야 함 | 일부는 CloudFormation으로 만들고, 나머지는 복원. 기존 오브젝트는 덮어쓰지 않음 |
+| 관측 데이터 EBS | 지원되는 EBS CSI 기반 PVC라면 별도 실행한 EKS 백업의 자식 복구 지점에 포함 | 백업에서 새 EBS로 복원하고 PVC 연결을 검증 |
+| 두 워커의 **루트 EBS** | **포함되지 않음** | 노드 종료 시 `DeleteOnTermination: true`에 따라 삭제되고, 새 노드가 생성될 때 새 루트 EBS를 생성 |
+| 노드 루트의 파일·이미지 캐시·컨테이너 로그 | 별도 백업하지 않으면 보존되지 않음 | 자동 복원되지 않음 |
+
+EKS 백업이 포함하는 영구 데이터는 **지원되는 CSI 드라이버로 PVC에 연결된 저장소**입니다. 노드 루트 디스크는 여기에 해당하지 않습니다. 정확한 자식 복구 지점과 백업 상태를 확인하고, 루트 파일시스템이나 `hostPath`/`emptyDir`에 유일한 데이터를 저장하지 마세요. [AWS Backup EKS 백업 범위](https://docs.aws.amazon.com/aws-backup/latest/devguide/eks-backups.html)
+
+노드 루트 EBS가 꼭 필요하면 EC2 인스턴스 백업이나 해당 EBS 스냅샷을 **별도로** 구성할 수 있지만, 지금 템플릿에는 없습니다. 별도 백업에는 비용이 들고, 백업에서 EC2/볼륨을 복원한다고 새 Managed Node Group의 루트 디스크에 자동으로 붙는 것은 아닙니다. 복원 절차와 노드 부트스트랩을 별도로 설계·검증해야 합니다. [AWS Backup EC2 백업](https://docs.aws.amazon.com/aws-backup/latest/devguide/working-with-supported-services.html)
 
 ## 비용 주의
 
